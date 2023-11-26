@@ -1,13 +1,11 @@
-/*TODO: 
-    genereal optimizations
+/*TODO:
     error handling/monads
-    better density calculation
-    maybe use ranges library more
-    test cases
+    better density calculation (kein bock, eh sinnlos honestly)
+    test cases (main also as test case)
     run.bat
     powerpoint
     readme
-    maybe move some lambdas out of main idk
+    at end remove comments/make them shorter
 */
 #include <iostream>
 #include <list>
@@ -18,9 +16,11 @@
 #include <fstream>
 #include <iterator>
 #include <algorithm>
+#include <chrono>
+#include <range/v3/all.hpp>
+#include <execution>
 // #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 // #include "doctest.h"
-#include <range/v3/all.hpp>
 
 using namespace std;
 using namespace std::placeholders;
@@ -36,7 +36,7 @@ public:
     {
         if (!file.is_open())
         {
-            throw runtime_error("Error opening file: " + filename); 
+            throw runtime_error("Error opening file: " + filename);
         }
     }
 
@@ -59,23 +59,21 @@ public:
         return lines;
     }
 
-    auto writeLines(const std::vector<std::string>& lines, const std::string& filename)
+    auto writeLines(const std::vector<std::string> &lines, const std::string &filename)
     {
         std::ofstream file(filename);
 
-        if (file.is_open())
-        {
-            for (size_t i = 0; i < lines.size(); ++i)
-            {
-                file << "Chapter " << i + 1 << ": " << lines[i] << '\n';
-            }
-
-            std::cout << "Chapter categorizations saved to '" << filename << "'" << std::endl;
-        }
-        else
+        if (!file)
         {
             throw std::runtime_error("Error opening output file: " + filename);
         }
+
+        for (const auto &line : lines)
+        {
+            file << "Chapter " << &line - &lines.front() + 1 << ": " << line << '\n';
+        }
+
+        std::cout << "Chapter categorizations saved to '" << filename << "'" << std::endl;
     }
 
 private:
@@ -98,9 +96,34 @@ auto readFile = [](const string &filename)
 */
 auto tokenize = [](const std::string &text)
 {
-    return text | ranges::views::split(' ') | ranges::views::transform([](auto &&rng)
-                                                                       { return std::string(&*rng.begin(), ranges::distance(rng)); });
-}; // returns view
+    return text | ranges::views::split_when([](char c)
+                                            {
+                                                return c == ' ' || c == '\r' || c == '\n' || c == '\t' ||
+                                                       c == ',' || c == ':' || c == ';' || c == '.' || c == '!' || c == '?' ||
+                                                       c == '\'' || c == '\"'; // not sure what delimiters we should use
+                                            }) |
+           ranges::views::transform([](auto &&rng)
+                                    { return std::string(&*rng.begin(), ranges::distance(rng)); });
+}; // returns view of strings
+
+auto tokenizeAll = [](const std::vector<std::string> &lines)
+{
+    // calculate the total number of words to reserve space
+    size_t totalWords = ranges::accumulate(lines.begin(), lines.end(), 0, [](size_t acc, const std::string &line)
+                                           { return acc + ranges::distance(tokenize(line).begin(), tokenize(line).end()); });
+
+    std::vector<std::string> result;
+    result.reserve(totalWords);
+
+    for (const auto &line : lines)
+    {
+        auto words = tokenize(line) | to<std::vector<std::string>>;
+        // insert elements directly at the end without reallocation
+        result.insert(result.end(), words.begin(), words.end());
+    }
+
+    return result;
+}; // returns vector of strings
 /*
 4) Filter words: Create a function to filter words from a list based on another list.
    This function should use functional programming techniques, such as higher-order functions and lambdas, to perform filtering.
@@ -118,13 +141,19 @@ auto filterWords = [](const std::vector<std::string> &words, const std::vector<s
    This function should use the map-reduce philosophy and functional programming techniques
    to count word occurrences in a parallelizable and efficient manner.
 */
+
 auto countOccurrences = [](const std::vector<std::string> &words)
 {
-    std::map<std::string, int> count;
+    std::unordered_map<std::string, int> count;
     for (const auto &word : words)
     {
         count[word]++;
     }
+    /*for (const auto &elem : count)
+    {
+        std::cout << elem.first << " " << elem.second << " | ";
+    }
+    std::cout << "| ";*/
     return count; // returns map: key=word, value=counts of the word
 };
 
@@ -133,33 +162,84 @@ auto countOccurrences = [](const std::vector<std::string> &words)
    based on the occurrences of words and their relative distances to the next word of the same category.
    This function should use functional programming techniques and the map-reduce philosophy for parallelization and efficiency.
 */
-auto calculateDensity = [](const std::vector<std::string> &words, const std::map<std::string, int> &occurrences) //bisher 63,84% Übereinstimmung mit Moodle Lösung lol
+auto calculateDensity = [](const std::vector<std::string> &words, const std::unordered_map<std::string, int> &occurrences) // bisher 66,85% Übereinstimmung mit Moodle Lösung lol
 {
     if (words.empty())
-      return 0.0;
+        return 0.0;
 
     int total_occurrences = 0;
-    //int total_distance = 0;
 
-    for (const auto &word : words)
+    for (const auto &term : occurrences)
     {
-        auto it = occurrences.find(word);
-        if (it != occurrences.end())
-        {
-            total_occurrences += it->second;
-            //total_distance++;
-        }
+        total_occurrences += term.second;
     }
-    
-    //return static_cast<double>(total_occurrences) / total_distance;
-    
 
     return static_cast<double>(total_occurrences) / words.size();
 };
 
+auto processChapters = [](const std::vector<std::string> &tokenizedBook, const std::vector<std::string> &warTokens, const std::vector<std::string> &peaceTokens)
+{
+    std::vector<double> warDensities;
+    std::vector<double> peaceDensities;
+
+    std::vector<std::string> currentChapterWords;
+
+    // int i = 0;
+    for (const auto &word : tokenizedBook)
+    {
+        if (word == "CHAPTER" && !currentChapterWords.empty())
+        {
+            //++i;
+            // cout << "CHAPTER " << i << ": ";
+            // Calculate density for the current chapter and store in vectors
+            auto warDensity = calculateDensity(currentChapterWords, countOccurrences(filterWords(currentChapterWords, warTokens)));
+            auto peaceDensity = calculateDensity(currentChapterWords, countOccurrences(filterWords(currentChapterWords, peaceTokens)));
+            // cout << endl;
+
+            warDensities.push_back(warDensity);
+            peaceDensities.push_back(peaceDensity);
+
+            // Clear the words for the next chapter
+            currentChapterWords.clear();
+        }
+        else
+        {
+            // collect words within the current chapter
+            currentChapterWords.push_back(word);
+        }
+    }
+
+    // Process the last chapter if there are remaining words
+    if (!currentChapterWords.empty())
+    {
+        //++i;
+        // cout << "CHAPTER " << i << ": ";
+        auto warDensity = calculateDensity(currentChapterWords, countOccurrences(filterWords(currentChapterWords, warTokens)));
+        auto peaceDensity = calculateDensity(currentChapterWords, countOccurrences(filterWords(currentChapterWords, peaceTokens)));
+        // cout << endl;
+        warDensities.push_back(warDensity);
+        peaceDensities.push_back(peaceDensity);
+    }
+
+    return std::make_pair(warDensities, peaceDensities);
+};
+
+auto categorizeChapters = [](const std::vector<double> &warDensities, const std::vector<double> &peaceDensities)
+{
+    std::vector<std::string> chapterCategorizations(warDensities.size());
+
+    std::transform(warDensities.begin(), warDensities.end(), peaceDensities.begin(), chapterCategorizations.begin(),
+                   [](double warDensity, double peaceDensity)
+                   {
+                       return (warDensity > peaceDensity) ? "war-related" : "peace-related";
+                   });
+
+    return chapterCategorizations;
+};
 
 int main()
 {
+    auto startTime = std::chrono::high_resolution_clock::now();
     try
     {
         /*
@@ -170,115 +250,26 @@ int main()
         auto warTerms = readFile("files/war_terms.txt");
         auto peaceTerms = readFile("files/peace_terms.txt");
 
-        auto tokenizeAll = [&](const std::vector<std::string> &lines)
-        {
-            std::cout << "tokenizing file..." << endl;
-
-            // Calculate the total number of words to reserve space
-            size_t totalWords = std::accumulate(lines.begin(), lines.end(), 0, [](size_t acc, const std::string &line) {
-                return acc + std::distance(tokenize(line).begin(), tokenize(line).end());
-            });
-
-            std::vector<std::string> result;
-            result.reserve(totalWords);
-
-            for (const auto &line : lines)
-            {
-                auto words = tokenize(line) | to<std::vector<std::string>>;
-                std::cout << "inserting..." << std::endl;
-
-                // Insert elements directly at the end without reallocation
-                result.insert(result.end(), words.begin(), words.end());
-            }
-
-            return result;
-        }; //returns vector of strings
-
         const auto warTokens = tokenizeAll(warTerms);
         const auto peaceTokens = tokenizeAll(peaceTerms);
         const auto bookTokens = tokenizeAll(book);
-        
 
-        //-----TODO------
         /*
         8) Process chapters: Process each chapter in the book by calculating the density of war and peace terms
            using the functions created in steps 4, 5, and 6. Store the densities in separate vectors for further processing.
         */
-        //1 vector for war density (each element  = war density for each chapter) ?
-        //1 vector for peace density (each element  = peace density for each chapter) ?
-
-        auto processChapters = [&](const std::vector<std::string> &tokenizedBook, const std::vector<std::string> &warTokens, const std::vector<std::string> &peaceTokens)
-        {
-            std::cout << "processing chapters..." << endl;
-            std::vector<double> warDensities;
-            std::vector<double> peaceDensities;
-
-            std::vector<std::string> currentChapterWords;
-
-            for (const auto &word : tokenizedBook)
-            {
-                if (word == "CHAPTER" && !currentChapterWords.empty())
-                {
-                    // Calculate density for the current chapter and store in vectors
-                    auto warDensity = calculateDensity(currentChapterWords, countOccurrences(filterWords(currentChapterWords, warTokens)));
-                    auto peaceDensity = calculateDensity(currentChapterWords, countOccurrences(filterWords(currentChapterWords, peaceTokens)));
-
-                    warDensities.push_back(warDensity);
-                    peaceDensities.push_back(peaceDensity);
-
-                    // Clear the words for the next chapter
-                    currentChapterWords.clear();
-                }
-                else
-                {
-                    // collect words within the current chapter
-                    currentChapterWords.push_back(word);
-                }
-            }
-
-            // Process the last chapter if there are remaining words
-            if (!currentChapterWords.empty())
-            {
-                auto warDensity = calculateDensity(currentChapterWords, countOccurrences(filterWords(currentChapterWords, warTerms)));
-                auto peaceDensity = calculateDensity(currentChapterWords, countOccurrences(filterWords(currentChapterWords, peaceTerms)));
-
-                warDensities.push_back(warDensity);
-                peaceDensities.push_back(peaceDensity);
-            }
-
-            return std::make_pair(warDensities, peaceDensities);
-        };
-
         const auto densities = processChapters(bookTokens, warTokens, peaceTokens);
 
         /*9) Categorize chapters: Iterate through the chapters, and for each chapter, compare the war density
            to the peace density to determine if it's war-related or peace-related. Store the results in a vector.
         */
-        auto categorizeChapters = [&](const std::vector<double> &warDensities, const std::vector<double> &peaceDensities)
-        {
-            std::cout << "categorizing chapters..." << endl;
-            std::vector<std::string> chapterCategorizations;
+        const auto chapterCategorizations = categorizeChapters(densities.first, densities.second);
 
-            for (size_t i = 0; i < warDensities.size(); ++i)
-            {
-                std::string categorization = (warDensities[i] > peaceDensities[i]) ? "war-related" : "peace-related";
-                chapterCategorizations.push_back(categorization);
-            }
-
-            return chapterCategorizations;
-        };
-
-       const auto chapterCategorizations = categorizeChapters(densities.first, densities.second);
         /*
         10) Print results: Iterate through the results vector and print each chapter's categorization as war-related or peace-related.
         */
-        for (size_t i = 0; i < chapterCategorizations.size(); ++i) {
-            std::cout << "Chapter " << i + 1 << ": " << chapterCategorizations[i] << '\n';
-        }
-
         FileHandler fileHandler;
         fileHandler.writeLines(chapterCategorizations, "files/output/chapterCategorizations.txt");
-        
     }
     catch (const std::exception &e)
     {
@@ -286,5 +277,8 @@ int main()
         return 1;
     }
 
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+    std::cout << "Program execution time: " << duration.count() << " milliseconds\n";
     return 0;
 }

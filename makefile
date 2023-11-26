@@ -4,5 +4,5 @@ all: project
 	mkdir -p out
 
 project: .outputFolder
-	clang -std=c++17 -lstdc++ -lm -Iinclude/ project.cpp -Wall -Wextra -Werror -o out/project
+	clang -std=c++17 -lstdc++ -lm -Iinclude/ project.cpp -Wall -Wextra -Werror -O3 -ltbb -o out/project
 	./out/project
